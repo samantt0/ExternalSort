@@ -1,12 +1,14 @@
 import struct
 import heapq
 import os
+import gc
 
-# Размер структуры Order (как в C++)
 RECORD_SIZE = 44  # 14 + 11 + 4 + 15
 
 
 class Order:
+    __slots__ = ['order_id', 'customer_id', 'price', 'status']
+
     def __init__(self, order_id, customer_id, price, status):
         self.order_id = order_id
         self.customer_id = customer_id
@@ -39,7 +41,7 @@ def write_order_to_bin(order):
 
 def sort_bin(input_file, output_file, sort_key, total_records, progress_callback=None):
     """Внешняя сортировка BIN файла"""
-    chunk_size = 2000000
+    chunk_size = 1000000
     chunks = []
 
     try:
@@ -47,6 +49,8 @@ def sort_bin(input_file, output_file, sort_key, total_records, progress_callback
             chunk_num = 0
             while True:
                 orders = []
+
+                # Читаем chunk_size записей
                 for _ in range(chunk_size):
                     data = f.read(RECORD_SIZE)
                     if not data or len(data) < RECORD_SIZE:
@@ -70,6 +74,7 @@ def sort_bin(input_file, output_file, sort_key, total_records, progress_callback
                 # Сохранение чанка
                 chunk_file = f"py_chunk_{chunk_num}.bin"
                 chunks.append(chunk_file)
+
                 with open(chunk_file, "wb") as cf:
                     for order in orders:
                         cf.write(write_order_to_bin(order))
@@ -79,6 +84,10 @@ def sort_bin(input_file, output_file, sort_key, total_records, progress_callback
 
                 chunk_num += 1
 
+                # Освобождаем память после каждого чанка
+                del orders
+                gc.collect()
+
         # Слияние чанков
         merge_bin_chunks(chunks, output_file, sort_key, total_records, progress_callback)
 
@@ -86,6 +95,9 @@ def sort_bin(input_file, output_file, sort_key, total_records, progress_callback
     except Exception as e:
         print(f"Error in sort_bin: {e}")
         return -1
+    finally:
+        # Принудительная очистка памяти
+        gc.collect()
 
 
 def merge_bin_chunks(chunk_files, output_file, sort_key, total_records, progress_callback=None):
@@ -93,32 +105,10 @@ def merge_bin_chunks(chunk_files, output_file, sort_key, total_records, progress
     files = [open(cf, "rb") for cf in chunk_files]
     heap = []
 
-    # Инициализация кучи
-    for i, f in enumerate(files):
-        data = f.read(RECORD_SIZE)
-        if data and len(data) == RECORD_SIZE:
-            order = read_order_from_bin(data)
-            if order:
-                sort_val = (order.order_id if sort_key == 0 else
-                            order.customer_id if sort_key == 1 else
-                            order.price if sort_key == 2 else
-                            order.status)
-                heapq.heappush(heap, (sort_val, i, order))
-
-    # Слияние
-    with open(output_file, "wb") as out:
-        written = 0
-        while heap:
-            sort_val, file_idx, order = heapq.heappop(heap)
-
-            out.write(write_order_to_bin(order))
-            written += 1
-
-            if progress_callback and written % 100000 == 0:
-                progress_callback(50 + written * 50 // total_records, 100)
-
-            # Читаем следующую запись из того же файла
-            data = files[file_idx].read(RECORD_SIZE)
+    try:
+        # Инициализация кучи
+        for i, f in enumerate(files):
+            data = f.read(RECORD_SIZE)
             if data and len(data) == RECORD_SIZE:
                 order = read_order_from_bin(data)
                 if order:
@@ -126,24 +116,66 @@ def merge_bin_chunks(chunk_files, output_file, sort_key, total_records, progress
                                 order.customer_id if sort_key == 1 else
                                 order.price if sort_key == 2 else
                                 order.status)
-                    heapq.heappush(heap, (sort_val, file_idx, order))
+                    heapq.heappush(heap, (sort_val, i, order))
 
-    # Закрытие и удаление временных файлов
-    for f in files:
-        f.close()
-    for cf in chunk_files:
-        try:
-            os.remove(cf)
-        except:
-            pass
+        # Слияние с буферизацией
+        with open(output_file, "wb") as out:
+            written = 0
+            buffer = []
+            BUFFER_SIZE = 50000  # Буфер для записи
 
-    if progress_callback:
-        progress_callback(100, 100)
+            while heap:
+                sort_val, file_idx, order = heapq.heappop(heap)
+
+                buffer.append(write_order_to_bin(order))
+                written += 1
+
+                # Записываем буфер на диск порциями
+                if len(buffer) >= BUFFER_SIZE:
+                    out.write(b''.join(buffer))
+                    buffer.clear()
+                    gc.collect()  # Очищаем память после записи
+
+                if progress_callback and written % 100000 == 0:
+                    progress_callback(50 + written * 50 // total_records, 100)
+
+                # Читаем следующую запись из того же файла
+                data = files[file_idx].read(RECORD_SIZE)
+                if data and len(data) == RECORD_SIZE:
+                    order = read_order_from_bin(data)
+                    if order:
+                        sort_val = (order.order_id if sort_key == 0 else
+                                    order.customer_id if sort_key == 1 else
+                                    order.price if sort_key == 2 else
+                                    order.status)
+                        heapq.heappush(heap, (sort_val, file_idx, order))
+
+            # Записываем остаток буфера
+            if buffer:
+                out.write(b''.join(buffer))
+                buffer.clear()
+
+    finally:
+        # Закрытие и удаление временных файлов
+        for f in files:
+            f.close()
+
+        for cf in chunk_files:
+            try:
+                os.remove(cf)
+            except:
+                pass
+
+        if progress_callback:
+            progress_callback(100, 100)
+
+        # Финальная очистка
+        gc.collect()
 
 
 def sort_csv(input_file, output_file, sort_key, total_records, progress_callback=None):
     """Внешняя сортировка CSV файла"""
-    chunk_size = 3000000
+    chunk_size = 1500000
     chunks = []
 
     try:
@@ -153,6 +185,7 @@ def sort_csv(input_file, output_file, sort_key, total_records, progress_callback
 
             while True:
                 orders = []
+
                 for _ in range(chunk_size):
                     line = f.readline()
                     if not line:
@@ -160,7 +193,10 @@ def sort_csv(input_file, output_file, sort_key, total_records, progress_callback
 
                     parts = line.strip().split(",")
                     if len(parts) >= 4:
-                        orders.append(Order(parts[0], parts[1], int(parts[2]), parts[3]))
+                        try:
+                            orders.append(Order(parts[0], parts[1], int(parts[2]), parts[3]))
+                        except (ValueError, IndexError):
+                            continue
 
                 if not orders:
                     break
@@ -176,6 +212,7 @@ def sort_csv(input_file, output_file, sort_key, total_records, progress_callback
                 # Сохранение в бинарный формат
                 chunk_file = f"py_chunk_csv_{chunk_num}.bin"
                 chunks.append(chunk_file)
+
                 with open(chunk_file, "wb") as cf:
                     for order in orders:
                         cf.write(write_order_to_bin(order))
@@ -185,6 +222,10 @@ def sort_csv(input_file, output_file, sort_key, total_records, progress_callback
 
                 chunk_num += 1
 
+                # Освобождаем память
+                del orders
+                gc.collect()
+
         # Слияние в CSV
         merge_csv_chunks(chunks, output_file, header, sort_key, total_records, progress_callback)
 
@@ -192,6 +233,8 @@ def sort_csv(input_file, output_file, sort_key, total_records, progress_callback
     except Exception as e:
         print(f"Error in sort_csv: {e}")
         return -1
+    finally:
+        gc.collect()
 
 
 def merge_csv_chunks(chunk_files, output_file, header, sort_key, total_records, progress_callback=None):
@@ -199,31 +242,9 @@ def merge_csv_chunks(chunk_files, output_file, header, sort_key, total_records, 
     files = [open(cf, "rb") for cf in chunk_files]
     heap = []
 
-    for i, f in enumerate(files):
-        data = f.read(RECORD_SIZE)
-        if data and len(data) == RECORD_SIZE:
-            order = read_order_from_bin(data)
-            if order:
-                sort_val = (order.order_id if sort_key == 0 else
-                            order.customer_id if sort_key == 1 else
-                            order.price if sort_key == 2 else
-                            order.status)
-                heapq.heappush(heap, (sort_val, i, order))
-
-    with open(output_file, "w", encoding="utf-8") as out:
-        out.write(header)
-        written = 0
-
-        while heap:
-            sort_val, file_idx, order = heapq.heappop(heap)
-
-            out.write(f"{order.order_id},{order.customer_id},{order.price},{order.status}\n")
-            written += 1
-
-            if progress_callback and written % 100000 == 0:
-                progress_callback(50 + written * 50 // total_records, 100)
-
-            data = files[file_idx].read(RECORD_SIZE)
+    try:
+        for i, f in enumerate(files):
+            data = f.read(RECORD_SIZE)
             if data and len(data) == RECORD_SIZE:
                 order = read_order_from_bin(data)
                 if order:
@@ -231,15 +252,55 @@ def merge_csv_chunks(chunk_files, output_file, header, sort_key, total_records, 
                                 order.customer_id if sort_key == 1 else
                                 order.price if sort_key == 2 else
                                 order.status)
-                    heapq.heappush(heap, (sort_val, file_idx, order))
+                    heapq.heappush(heap, (sort_val, i, order))
 
-    for f in files:
-        f.close()
-    for cf in chunk_files:
-        try:
-            os.remove(cf)
-        except:
-            pass
+        with open(output_file, "w", encoding="utf-8") as out:
+            out.write(header)
+            written = 0
+            buffer = []
+            BUFFER_SIZE = 50000
 
-    if progress_callback:
-        progress_callback(100, 100)
+            while heap:
+                sort_val, file_idx, order = heapq.heappop(heap)
+
+                buffer.append(f"{order.order_id},{order.customer_id},{order.price},{order.status}\n")
+                written += 1
+
+                # Записываем буфер порциями
+                if len(buffer) >= BUFFER_SIZE:
+                    out.writelines(buffer)
+                    buffer.clear()
+                    gc.collect()
+
+                if progress_callback and written % 100000 == 0:
+                    progress_callback(50 + written * 50 // total_records, 100)
+
+                data = files[file_idx].read(RECORD_SIZE)
+                if data and len(data) == RECORD_SIZE:
+                    order = read_order_from_bin(data)
+                    if order:
+                        sort_val = (order.order_id if sort_key == 0 else
+                                    order.customer_id if sort_key == 1 else
+                                    order.price if sort_key == 2 else
+                                    order.status)
+                        heapq.heappush(heap, (sort_val, file_idx, order))
+
+            # Записываем остаток
+            if buffer:
+                out.writelines(buffer)
+                buffer.clear()
+
+    finally:
+        for f in files:
+            f.close()
+
+        for cf in chunk_files:
+            try:
+                os.remove(cf)
+            except:
+                pass
+
+        if progress_callback:
+            progress_callback(100, 100)
+
+        gc.collect()

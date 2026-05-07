@@ -1,8 +1,9 @@
 from tkinter import *
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import ctypes
 import threading
 import struct
+import time
 
 # Подключение библиотеки
 lib = ctypes.CDLL("./generation&sort.dll")
@@ -31,9 +32,7 @@ lib.check_bin.restype = ctypes.c_int
 lib.check_csv.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, PROGRESS_FUNC]
 lib.check_csv.restype = ctypes.c_int
 
-# ВАЖНО: Структура должна быть выровнена так же, как в C++
-# C++ использует #pragma pack(push, 1), что означает выравнивание по 1 байту
-RECORD_SIZE = 14 + 11 + 4 + 15  # = 44 байта
+RECORD_SIZE = 44
 
 
 def set_buttons(state):
@@ -52,6 +51,59 @@ def make_callback():
     return PROGRESS_FUNC(cb)
 
 
+def show_timing_dialog(total_time, mode, records_count):
+    """Показать диалог с результатами времени выполнения"""
+    dialog = Toplevel(root)
+    dialog.title("Результаты сортировки")
+    dialog.geometry("400x220")
+    dialog.resizable(False, False)
+
+    # Центрирование окна
+    dialog.transient(root)
+    dialog.grab_set()
+
+    # Заголовок
+    Label(dialog, text=f"Сортировка завершена",
+          font=("Arial", 12, "bold")).pack(pady=10)
+
+    # Рамка с результатами
+    results_frame = LabelFrame(dialog, text="Временные метрики",
+                               font=("Arial", 10, "bold"), padx=20, pady=10)
+    results_frame.pack(padx=20, pady=10, fill="both", expand=True)
+
+    # Формат файла
+    format_frame = Frame(results_frame)
+    format_frame.pack(fill="x", pady=5)
+    Label(format_frame, text="Формат:", font=("Arial", 10),
+          width=18, anchor="w").pack(side=LEFT)
+    Label(format_frame, text=mode.upper(),
+          font=("Arial", 10, "bold"), fg="purple").pack(side=LEFT)
+
+    # Общее время
+    total_frame = Frame(results_frame)
+    total_frame.pack(fill="x", pady=5)
+    Label(total_frame, text="Общее время:", font=("Arial", 10),
+          width=18, anchor="w").pack(side=LEFT)
+
+    # Форматирование времени
+    if total_time < 60:
+        time_str = f"{total_time:.2f} сек"
+    else:
+        minutes = int(total_time // 60)
+        seconds = total_time % 60
+        time_str = f"{minutes} мин {seconds:.2f} сек"
+
+    Label(total_frame, text=time_str,
+          font=("Arial", 10, "bold"), fg="green").pack(side=LEFT)
+
+    # Кнопка закрытия
+    Button(dialog, text="OK", command=dialog.destroy,
+           width=15, font=("Arial", 10)).pack(pady=10)
+
+    # Ожидание закрытия окна
+    root.wait_window(dialog)
+
+
 # Генерация
 def generate(type):
     set_buttons(DISABLED)
@@ -60,14 +112,68 @@ def generate(type):
     callback = make_callback()
 
     def run():
+        start_time = time.time()
+
         if type == "bin":
             lib.generate_bin(N_BIN, callback)
+            records = N_BIN
         else:
             lib.generate_csv(N_CSV, callback)
+            records = N_CSV
+
+        elapsed_time = time.time() - start_time
+
         set_buttons(NORMAL)
         labelProgress.config(text="Готово!")
 
+        # Показываем диалог с временем
+        show_generation_dialog(elapsed_time, type, records)
+
     threading.Thread(target=run, daemon=True).start()
+
+
+def show_generation_dialog(total_time, mode, records_count):
+    """Показать диалог с результатами генерации"""
+    dialog = Toplevel(root)
+    dialog.title("Результаты генерации")
+    dialog.geometry("400x180")
+    dialog.resizable(False, False)
+
+    dialog.transient(root)
+    dialog.grab_set()
+
+    Label(dialog, text=f"Генерация завершена",
+          font=("Arial", 12, "bold")).pack(pady=10)
+
+    results_frame = LabelFrame(dialog, text="Результаты",
+                               font=("Arial", 10, "bold"), padx=20, pady=10)
+    results_frame.pack(padx=20, pady=10, fill="both", expand=True)
+
+    # Формат
+    format_frame = Frame(results_frame)
+    format_frame.pack(fill="x", pady=5)
+    Label(format_frame, text="Формат:", font=("Arial", 10),
+          width=18, anchor="w").pack(side=LEFT)
+    Label(format_frame, text=mode.upper(),
+          font=("Arial", 10, "bold"), fg="purple").pack(side=LEFT)
+
+    # Время
+    time_frame = Frame(results_frame)
+    time_frame.pack(fill="x", pady=5)
+    Label(time_frame, text="Время генерации:", font=("Arial", 10),
+          width=18, anchor="w").pack(side=LEFT)
+
+    if total_time < 60:
+        time_str = f"{total_time:.2f} сек"
+    else:
+        minutes = int(total_time // 60)
+        seconds = total_time % 60
+        time_str = f"{minutes} мин {seconds:.2f} сек"
+
+    Label(time_frame, text=time_str,
+          font=("Arial", 10, "bold"), fg="green").pack(side=LEFT)
+
+    root.wait_window(dialog)
 
 
 # Выбор ключа сортировки
@@ -77,7 +183,8 @@ def sort_key(mode, use_python=False):
     window.geometry("320x180")
     window.resizable(False, False)
 
-    Label(window, text="Выберите поле для сортировки:", font=("Arial", 10, "bold")).pack(pady=10)
+    Label(window, text="Выберите поле для сортировки:",
+          font=("Arial", 10, "bold")).pack(pady=10)
 
     btn_frame = Frame(window)
     btn_frame.pack(fill="both", expand=True, padx=20, pady=5)
@@ -101,25 +208,47 @@ def start_sort(mode, sort_key_val, use_python=False):
 
     def run():
         try:
+            start_time = time.time()
+
             if use_python:
                 import external_sort_py
 
                 if mode == "bin":
-                    result = external_sort_py.sort_bin("orders.bin", "orders.bin", sort_key_val, N_BIN, callback)
+                    result = external_sort_py.sort_bin("orders.bin", "orders.bin",
+                                                       sort_key_val, N_BIN, callback)
+                    records = N_BIN
                 else:
-                    result = external_sort_py.sort_csv("orders.csv", "orders.csv", sort_key_val, N_CSV, callback)
+                    result = external_sort_py.sort_csv("orders.csv", "orders.csv",
+                                                       sort_key_val, N_CSV, callback)
+                    records = N_CSV
+
+                elapsed_time = time.time() - start_time
+
+                if result == 0:
+                    labelProgress.config(text="Готово!")
+                    show_timing_dialog(elapsed_time, mode + " (Python)", records)
+                else:
+                    labelProgress.config(text="Ошибка!")
             else:
                 if mode == "bin":
-                    result = lib.sort_bin(b"orders.bin", b"orders.bin", sort_key_val, N_BIN, callback)
+                    result = lib.sort_bin(b"orders.bin", b"orders.bin",
+                                          sort_key_val, N_BIN, callback)
+                    records = N_BIN
                 else:
-                    result = lib.sort_csv(b"orders.csv", b"orders.csv", sort_key_val, N_CSV, callback)
+                    result = lib.sort_csv(b"orders.csv", b"orders.csv",
+                                          sort_key_val, N_CSV, callback)
+                    records = N_CSV
 
-            if result == 0:
-                labelProgress.config(text="Готово!")
-            else:
-                labelProgress.config(text="Ошибка!")
+                elapsed_time = time.time() - start_time
+
+                if result == 0:
+                    labelProgress.config(text="Готово!")
+                    show_timing_dialog(elapsed_time, mode + " (C++)", records)
+                else:
+                    labelProgress.config(text="Ошибка!")
         except Exception as e:
             labelProgress.config(text=f"Ошибка: {str(e)}")
+            messagebox.showerror("Ошибка", f"Произошла ошибка: {str(e)}")
         finally:
             set_buttons(NORMAL)
 
@@ -133,7 +262,8 @@ def check_key(mode):
     window.geometry("320x180")
     window.resizable(False, False)
 
-    Label(window, text="Выберите поле для проверки:", font=("Arial", 10, "bold")).pack(pady=10)
+    Label(window, text="Выберите поле для проверки:",
+          font=("Arial", 10, "bold")).pack(pady=10)
 
     btn_frame = Frame(window)
     btn_frame.pack(fill="both", expand=True, padx=20, pady=5)
@@ -156,21 +286,96 @@ def start_check(mode, sort_key_val):
     callback = make_callback()
 
     def run():
+        start_time = time.time()
+
         if mode == "bin":
             result = lib.check_bin(b"orders.bin", sort_key_val, N_BIN, callback)
+            records = N_BIN
         else:
             result = lib.check_csv(b"orders.csv", sort_key_val, N_CSV, callback)
+            records = N_CSV
+
+        elapsed_time = time.time() - start_time
 
         if result == 0:
             labelProgress.config(text="Файл упорядочен!")
+            show_check_dialog(elapsed_time, mode, records, True)
         elif result == -1:
             labelProgress.config(text="Ошибка открытия файла!")
+            messagebox.showerror("Ошибка", "Не удалось открыть файл!")
         else:
             labelProgress.config(text=f"Нарушение на записи {result + 1}!")
+            show_check_dialog(elapsed_time, mode, result, False)
 
         set_buttons(NORMAL)
 
     threading.Thread(target=run, daemon=True).start()
+
+
+def show_check_dialog(total_time, mode, info, is_sorted):
+    """Показать диалог с результатами проверки"""
+    dialog = Toplevel(root)
+    dialog.title("Результаты проверки")
+    dialog.geometry("400x200")
+    dialog.resizable(False, False)
+
+    dialog.transient(root)
+    dialog.grab_set()
+
+    if is_sorted:
+        Label(dialog, text="✓ Файл упорядочен!",
+              font=("Arial", 12, "bold"), fg="green").pack(pady=10)
+    else:
+        Label(dialog, text="✗ Файл НЕ упорядочен!",
+              font=("Arial", 12, "bold"), fg="red").pack(pady=10)
+
+    results_frame = LabelFrame(dialog, text="Результаты проверки",
+                               font=("Arial", 10, "bold"), padx=20, pady=10)
+    results_frame.pack(padx=20, pady=10, fill="both", expand=True)
+
+    # Формат
+    format_frame = Frame(results_frame)
+    format_frame.pack(fill="x", pady=5)
+    Label(format_frame, text="Формат:", font=("Arial", 10),
+          width=18, anchor="w").pack(side=LEFT)
+    Label(format_frame, text=mode.upper(),
+          font=("Arial", 10, "bold"), fg="purple").pack(side=LEFT)
+
+    # Время
+    time_frame = Frame(results_frame)
+    time_frame.pack(fill="x", pady=5)
+    Label(time_frame, text="Время проверки:", font=("Arial", 10),
+          width=18, anchor="w").pack(side=LEFT)
+
+    if total_time < 60:
+        time_str = f"{total_time:.2f} сек"
+    else:
+        minutes = int(total_time // 60)
+        seconds = total_time % 60
+        time_str = f"{minutes} мин {seconds:.2f} сек"
+
+    Label(time_frame, text=time_str,
+          font=("Arial", 10, "bold"), fg="green").pack(side=LEFT)
+
+    # Дополнительная информация
+    info_frame = Frame(results_frame)
+    info_frame.pack(fill="x", pady=5)
+
+    if is_sorted:
+        Label(info_frame, text="Записей проверено:", font=("Arial", 10),
+              width=18, anchor="w").pack(side=LEFT)
+        Label(info_frame, text=f"{info:,}",
+              font=("Arial", 10, "bold"), fg="blue").pack(side=LEFT)
+    else:
+        Label(info_frame, text="Нарушение на записи:", font=("Arial", 10),
+              width=18, anchor="w").pack(side=LEFT)
+        Label(info_frame, text=f"{info + 1}",
+              font=("Arial", 10, "bold"), fg="red").pack(side=LEFT)
+
+    Button(dialog, text="OK", command=dialog.destroy,
+           width=15, font=("Arial", 10)).pack(pady=10)
+
+    root.wait_window(dialog)
 
 
 # Загрузка BIN
@@ -178,52 +383,28 @@ def load_bin():
     table.delete(*table.get_children())
     try:
         with open("orders.bin", "rb") as f:
-            record_count = 0
-
-            while record_count < 1000:
-                # Читаем ровно 44 байта (размер структуры Order)
+            for i in range(1000):
                 data = f.read(RECORD_SIZE)
-
                 if not data or len(data) < RECORD_SIZE:
                     break
-
-                # Разбираем структуру вручную:
-                # char order_id[14] - байты 0-13
-                # char customer_id[11] - байты 14-24
-                # int total_price - байты 25-28 (4 байта)
-                # char order_status[15] - байты 29-43
 
                 order_id_bytes = data[0:14]
                 customer_id_bytes = data[14:25]
                 price_bytes = data[25:29]
                 status_bytes = data[29:44]
 
-                # Декодируем строки
-                try:
-                    order_id = order_id_bytes.rstrip(b'\x00').decode("ascii", errors='ignore')
-                    customer_id = customer_id_bytes.rstrip(b'\x00').decode("ascii", errors='ignore')
-                    status = status_bytes.rstrip(b'\x00').decode("ascii", errors='ignore')
+                order_id = order_id_bytes.rstrip(b'\x00').decode("ascii", errors='ignore')
+                customer_id = customer_id_bytes.rstrip(b'\x00').decode("ascii", errors='ignore')
+                status = status_bytes.rstrip(b'\x00').decode("ascii", errors='ignore')
+                price = struct.unpack('<i', price_bytes)[0]
 
-                    # Распаковываем int (little-endian)
-                    price = struct.unpack('<i', price_bytes)[0]
+                table.insert("", END, values=(i + 1, order_id, customer_id, price, status))
 
-                    # Вставляем в таблицу
-                    table.insert("", END, values=(record_count + 1, order_id, customer_id, price, status))
-                    record_count += 1
-
-                except Exception as e:
-                    print(f"Ошибка декодирования записи {record_count}: {e}")
-                    # Показываем сырые данные для отладки
-                    print(f"Raw data: {data.hex()}")
-                    continue
-
-        labelProgress.config(text=f"Загружено {record_count} записей из BIN файла")
-
+        labelProgress.config(text=f"Загружено записей из BIN файла")
     except FileNotFoundError:
         labelProgress.config(text="Файл orders.bin не найден")
     except Exception as e:
         labelProgress.config(text=f"Ошибка чтения: {str(e)}")
-        print(f"Detailed error: {e}")
 
 
 # Загрузка CSV
@@ -231,7 +412,7 @@ def load_csv():
     table.delete(*table.get_children())
     try:
         with open("orders.csv", "r", encoding="utf-8") as f:
-            next(f)  # Пропуск заголовка
+            next(f)
             for i, line in enumerate(f):
                 if i >= 1000:
                     break
